@@ -1,0 +1,153 @@
+HANDOFF FOR ANOTHER AI ASSISTANT  -  CityPriority AI
+=====================================================
+Read this whole file before changing anything. It is written so you can continue the work
+without the earlier conversation.
+
+1. WHAT THIS PROJECT IS
+-----------------------
+"CityPriority AI" is a datathon project (DATATHON 2026, challenge "Smart City: where should we fix first?").
+It ranks 1,000 city locations by how urgently they need attention, explains every rank in plain words,
+and shows the result in a single-file offline HTML dashboard. The user wants a professional-looking,
+fast, honest demo for judges. The user is not a developer by background and has little time: prefer
+small, safe, finished changes over big rewrites, and always tell them exactly what changed and how to run it.
+
+THE DATA IS SYNTHETIC (organisers say so). Coordinates and timestamps are simulated. Never present it as real,
+never imply real public-safety use. A synthetic-data banner must stay on every dashboard page.
+
+2. FOLDER MAP
+-------------
+run_stage1.py            load data + validation + data-quality report
+run_stage2.py            score locations, show top 10 and an example explanation
+run_model.py             score any data folder and save results/ranked_locations.csv   (--data, --out)
+validate_model.py        forecasting test: train Jan-Sep, predict Oct-Dec (needs scikit-learn, scipy)
+export_dashboard_data.py builds dashboard/dash_data.json (writes to dashboard/ relative to the script)
+build_dashboard.py       inlines dash_data.json into dashboard_template.html -> citypriority_dashboard.html
+core/config.py           weights, thresholds, category lists, escalation thresholds (edit here)
+core/loader.py           loads + validates the 3 CSVs; missing values stay NaN
+core/quality.py          data-quality findings
+core/scoring.py          5-factor weighted score, shrinkage, ranking, explain()
+core/safety_rules.py     hard escalation rules R1-R3
+data/                    locations.csv (1,000), incidents.csv (10,000), public_complaints.csv (8,000), DATA_SOURCES.md
+dashboard/dashboard_template.html   THE SOURCE of the interface (edit this one)
+dashboard/dash_data.json            generated data (do not hand-edit)
+dashboard/citypriority_dashboard.html  GENERATED final file (template + data inlined). Never edit by hand.
+tests/                   test_loader.py, test_scoring.py (12 tests)
+results/ranked_locations.csv  output of run_model.py
+
+3. HOW TO RUN (Windows)
+-----------------------
+python -m venv .venv ; .venv\Scripts\activate ; python -m pip install -r requirements-minimal.txt
+python run_stage2.py
+python export_dashboard_data.py
+python build_dashboard.py          -> open dashboard/citypriority_dashboard.html
+python -m pytest -q                -> 12 tests; all pass (verified at v1.0.0). Re-run after any change.
+
+4. THE MODEL (do not change silently)
+-------------------------------------
+Five factors, each 0-100, priority = sum(factor x weight):
+  severity 0.30 | safety_risk 0.25 | traffic_impact 0.20 (PROXY: road type + traffic-type incidents; no traffic counts exist)
+  incident_frequency 0.15 | local_context 0.10
+Small-sample locations are shrunk toward the city average (SHRINKAGE_K=5).
+Hard escalation rules (never use the score; escalated locations ALWAYS rank first):
+  R1 unresolved Critical incident with injury
+  R2 unresolved High/Critical injury incident near a school/hospital with high pedestrian activity
+  R3 unresolved incidents at one location total >= 4 injuries
+Result: 1,000 locations, 52 escalated, top location L0556 (score 85.4). Rank 53 (L0688, 80.7) outscores many escalated
+locations by design.
+Factor order everywhere (code, JSON, UI): severity, safety_risk, traffic_impact, incident_frequency, local_context.
+
+5. HONEST FINDINGS (the UI must keep stating these; do not overclaim)
+---------------------------------------------------------------------
+a) FORECASTING HAS NO SIGNAL. validate_model.py trains on Jan-Sep and predicts Oct-Dec per location.
+   Poisson deviance (lower is better): Q4 incidents baseline 1.108 / Poisson GLM 1.121 / GBM 1.142;
+   Q4 injuries 1.228 / 1.232 / 1.257; Q4 serious 1.174 / 1.178 / 1.199. No model beats the plain average.
+   Q4 incident counts per location have mean 2.48, variance 2.44 (pure Poisson noise). Any-injury AUC 0.53.
+   The existing priority score has AUC 0.499 for next-quarter injuries. => The score ranks CURRENT priority;
+   it does NOT predict the future. Never write "predictive", "forecast" or "AI-powered prediction".
+   Do not build an ML forecaster; it will not beat the baseline on this data.
+b) SEVERITY IS WEAK. Mean severity is 1.92 at 0 injuries vs 1.86 at 3 injuries; severity does not change
+   resolution time or resolution rate. Yet it carries 30% of the score. Suggested fix: lower its weight.
+c) RESOLUTION FIELDS ARE UNRELIABLE. ALL 2,874 unresolved incidents and ALL 3,438 open complaints still carry a
+   resolution time (the fields are never empty). So they cannot confirm whether work is finished, and the safety
+   rules (which depend on resolved==0) produce LEADS FOR ON-SITE INSPECTION, not confirmed hazards.
+   CORRECTION: earlier in the project history this was wrongly described as "28.7% of unresolved incidents" and
+   "43% of open complaints". 28.7% and 43% are shares of ALL incidents/complaints; the share of unresolved/open
+   records is 100%. Because it affects all 52 escalated locations, the per-row "status uncertain" flag carries no
+   information, so the UI shows one global caveat instead of per-row badges.
+d) One year only (2025-01-01 to 2025-12-31): no seasonal forecasting. No repair-cost data. No traffic counts.
+e) Ranking stability: equal weights keep 74% (37/50) of the top 50; shifting one weight by 0.10 keeps 82-88%.
+f) The data looks randomly generated (flat zone averages 46-53, near-zero factor correlations, uniform months).
+   Do not present patterns as real findings.
+
+6. THE DASHBOARD
+----------------
+Single self-contained HTML file: all CSS + JS inline, plain HTML/CSS/JS, NO libraries, NO CDN, NO external fonts,
+works offline by double-click. Data is embedded in <script id="d" type="application/json">__DATA__</script>
+(build_dashboard.py replaces __DATA__; also escapes "</").
+Routing: hash routes  #/overview  #/list  #/map  #/loc/<ID>  #/whatif  #/quality  #/method   (tabs are real buttons, arrow-key nav).
+State: filters (FL object) and weights (w) live in memory; tab and location id live in the URL hash.
+Map tab: offline SVG scatter of lat/lon (SIMULATED coordinates, no tiles); red = escalated; filters zone/road type/school/hospital; hover tooltip; click opens the location; top-10-in-view table. Reads lat/lon from the JSON rows.
+Pages: Overview (hero headline "52 of 1,000 locations need immediate review", 3 key facts, KPI tiles, monthly chart,
+top-5 list, how-to-read card) | Priority list (escalated section first, filters, CSV download, 50-row paging,
+friendly empty state) | Location (4 summary tiles, explanation sentence, rule panel, factor bars, incident-type mix,
+facts, "what we can't tell you") | What-if (5 sliders always summing to 100%, live re-rank of top 20 non-escalated,
+top-50 overlap) | Data quality (findings, explanation card, model-check table) | Method (factors, rules, example, limitations).
+Loading and error states exist (Loading data... / "We couldn't load the data").
+
+JSON shape (dash_data.json): rows[] with id, z (zone), lat, lon, rt (road type), rc (road condition),
+pa (pedestrian activity), sc (near school 0/1), ho (near hospital 0/1), s (score), rk (rank), esc (escalated),
+unc (escalated and has unresolved incident with a resolution time; currently true for all 52), why[] (rule texts),
+f[5] (factor values), p[5] (weighted points), n (incidents), oc (open complaints), cf (confidence 0-100),
+gaps[[problem,next step]], ty[] (incident counts per type). Also: types[], month[12], nI, nC, nL, q[] (quality findings).
+Confidence labels: High >= 70, Medium 40-69, Low < 40. Top driver = largest weighted-points factor.
+
+HARD-CODED IN THE TEMPLATE (could drift if the model changes; consider reading from JSON):
+  weights W, factor names and descriptions, rule text R1-R3, the model-check table (VAL), the "74%" note,
+  the severity-vs-injuries numbers (1.92 vs 1.86).
+
+DESIGN SYSTEM
+  Direction (v1.0.0): road-signage / municipal look so it does not read as a generic template. Palette: asphalt #1F252B (header, footer),
+  sign blue #0A4DA2 (links, buttons, selected tab, map dots, bars), road-marking yellow #F6C90E (synthetic-data banner, centre-line dashes, accents),
+  alert red (Immediate review ONLY: hero panel, red dots, rule panels), cool grey page #E9ECEF. Tokens are CSS variables on :root:
+  --asphalt --brand --yellow --red --ok --warn --hero (light, prefers-color-scheme dark, manual toggle via data-theme).
+  Fonts (system stacks only, offline): headings/large numbers Bahnschrift (DIN-style road-sign face) -> DIN Alternate -> Arial Narrow;
+  body Segoe UI -> system. Tabular numerals in tables. Page-switch effects (user request): new page slides in from the side its tab sits on (go-r/go-l/go-f classes set by go() in route()), plus a yellow road line drawn under the tabs (nav.run). No hover-lift effects; factor bars grow on load. Off under prefers-reduced-motion.
+  Avoid reintroducing: all-caps labels, eyebrow text above headings, arrows on buttons, dot-joined strings, identical shadowed cards.
+  Accessibility: skip link, keyboard-navigable tabs, aria-labels on charts, badges use icon + text (never colour alone),
+  print stylesheet hides nav/tools.
+  Never use localStorage-dependent logic for core features.
+
+7. WHAT HAS AND HAS NOT BEEN VERIFIED
+-------------------------------------
+Verified: run_stage1, run_stage2, run_model, export_dashboard_data, build_dashboard, validate_model all run;
+dashboard JS passes node --check; every page renders without errors in a STUBBED DOM smoke test; default weights
+reproduce the ranking; equal weights give 37/50 overlap; sliders always sum to 1.
+NOT verified: any real-browser rendering (visual layout, responsiveness at 360px, dark mode look, print layout),
+accessibility audit, the 12 pytest tests (never run), Windows behaviour of the scripts (paths were made relative but
+untested on Windows).
+
+8. KNOWN ISSUES / SUGGESTED NEXT STEPS (highest value first)
+-------------------------------------------------------------
+1. Run pytest on the user's machine; fix failures; make test_loader.py independent of the real CSVs; add tests for
+   export_dashboard_data.py (1000 rows, 52 escalated, weights sum to 1, f and p have length 5).
+2. Open the dashboard in a real browser; check layout at 360/768/1280px, dark mode, keyboard-only use; fix what is off.
+3. Lower the severity weight (e.g. 15%) and add a one-line justification on the Method page; re-check top-50 overlap.
+4. Add a "Key findings" card and a footer (data source, "synthetic", build date, version) to the Overview.
+5. Add the recent-incidents table to the Location page (export last ~10 incidents per location into JSON).
+6. Offline map page (canvas, lat/lon, shape+colour by tier, click opens location). Was cut for time.
+7. Save filters in the URL hash; make whole table rows keyboard-focusable.
+8. Replace hard-coded template values with values read from JSON (cfg, validation blocks).
+9. requirements.txt lists unused packages (streamlit, folium, plotly, pulp); INCIDENT_TO_COMPLAINT_CATEGORY in
+   core/config.py is unused; complaint priority/reporter type are not used by the score. Use or remove.
+10. Make the 4-injury R3 threshold adjustable (3 -> 56 locations, 4 -> 15, 5 -> 3).
+
+9. RULES FOR WORKING ON THIS PROJECT
+-----------------------------------
+- Edit dashboard/dashboard_template.html, then run build_dashboard.py. Do not edit the generated HTML or dash_data.json.
+- Keep the dashboard one offline file: no CDN, no external fonts, no frameworks.
+- Keep the synthetic-data banner. Keep the "does not forecast" wording. Do not add claims you cannot back with data.
+- Keep red reserved for Immediate review / critical. Keep icon + text on every badge.
+- Do not change scoring logic without telling the user; report the effect on the top-50 overlap when you do.
+- Do not add an ML forecasting model (see finding 5a).
+- After any change: re-run export + build, run the tests, and state exactly which files changed and how to run them.
+- Keep answers short and concrete for the user; give a checklist of what they should see.
